@@ -7,9 +7,10 @@ swift build -c release
 
 APP=dist/Pinger.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/Pinger "$APP/Contents/MacOS/Pinger"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,9 +22,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDisplayName</key>
     <string>Pinger</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.pinger</string>
+    <string>com.fruitcc.pinger</string>
     <key>CFBundleExecutable</key>
     <string>Pinger</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -34,13 +37,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>NSHumanReadableCopyright</key>
-    <string></string>
+    <string>© 2026 Fruit Cloud Co., LLC</string>
 </dict>
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+# Ad-hoc signature with the same sandbox entitlements as the App Store build,
+# so local runs exercise the sandboxed code paths.
+codesign --force --sign - --entitlements Pinger.entitlements "$APP"
 
 echo "Built $APP"
 echo "Run it with: open $APP"

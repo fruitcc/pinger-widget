@@ -7,8 +7,10 @@ A tiny macOS menu bar app that shows your internet health as a colored dot.
 - **Red** — down (consecutive failures, or smoothed loss/latency past the red thresholds)
 - **Gray** — starting up / no data yet
 
-It pings a destination (default `8.8.8.8`) every N seconds (default 2s) by
-invoking `/sbin/ping`.
+It pings a destination (default `8.8.8.8`) every N seconds (default 2s) using
+native ICMP echo over an unprivileged datagram socket — sandbox-friendly, no
+subprocesses, no special privileges. IPv4 destinations (or hostnames that
+resolve to IPv4).
 
 **Left-click** the dot: results panel — current status, smoothed latency ±
 jitter and loss, and the last 10 ping events (latency in ms, `timed out`, or
@@ -63,12 +65,25 @@ any preset-owned number switches the profile to Custom.
 # quick run from source
 swift run
 
-# build a proper .app bundle (menu-bar only, no Dock icon)
+# build a sandboxed, ad-hoc-signed .app bundle (menu-bar only, no Dock icon)
 ./make-app.sh
 open dist/Pinger.app
 ```
 
 To start it at login: System Settings → General → Login Items → add `dist/Pinger.app`.
+
+## App Store build
+
+The Mac App Store build uses the Xcode project generated from `project.yml`
+(App Sandbox + network-client entitlements, bundle ID `com.fruitcc.pinger`):
+
+```sh
+xcodegen generate          # regenerates Pinger.xcodeproj after project.yml edits
+open Pinger.xcodeproj      # Product → Archive → Distribute App → App Store Connect
+```
+
+The icon is rendered by `swift scripts/render-icon.swift <dir>` and committed
+as `Resources/AppIcon.icns`. Privacy policy for App Store Connect: `PRIVACY.md`.
 
 ## Layout
 

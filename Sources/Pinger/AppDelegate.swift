@@ -42,6 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         monitor.start()
+
+        // First launch: open the results panel once so a brand-new user (and
+        // App Review) can see what the app does without hunting for the dot.
+        let firstLaunchKey = "didShowFirstLaunchPanel"
+        if !UserDefaults.standard.bool(forKey: firstLaunchKey) {
+            UserDefaults.standard.set(true, forKey: firstLaunchKey)
+            openStatusPanel()
+        }
     }
 
     // MARK: - Click routing
