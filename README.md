@@ -10,8 +10,9 @@ A tiny macOS menu bar app that shows your internet health as a colored dot.
 It pings a destination (default `8.8.8.8`) every N seconds (default 2s) by
 invoking `/sbin/ping`.
 
-**Left-click** the dot: results panel — current status, smoothed latency and
-loss, and the last 10 ping events (latency in ms, `timed out`, or the error).
+**Left-click** the dot: results panel — current status, smoothed latency ±
+jitter and loss, and the last 10 ping events (latency in ms, `timed out`, or
+the error; latency spikes get a yellow dot).
 
 **Right-click** the dot: menu with your destination list (switch instantly),
 **Settings…**, and **Quit**.
@@ -28,23 +29,28 @@ Designed to react fast without flip-flopping:
 1. **Recency-weighted scoring** — loss and latency are exponentially weighted
    moving averages (EWMA), so the last few pings dominate and old samples fade
    instead of lingering for a fixed 10-ping window.
-2. **Failure fast path** — N consecutive failures force red immediately,
+2. **Jitter / spike detection** — an RTP-style jitter estimator (EWMA of each
+   sample's deviation from the smoothed latency) turns the dot yellow when
+   latency becomes unstable, even while the average still looks fine. A single
+   huge spike registers immediately and decays over the next few good pings;
+   jitter alone never causes red.
+3. **Failure fast path** — N consecutive failures force red immediately,
    regardless of the averages.
-3. **Sticky recovery** — leaving red requires M consecutive successes, so one
+4. **Sticky recovery** — leaving red requires M consecutive successes, so one
    lucky ping during an outage can't flash green; on recovery the averages
    reset so green shows immediately.
-4. **Adaptive burst probing** — at the first sign of a transition (a failure
+5. **Adaptive burst probing** — at the first sign of a transition (a failure
    while up, a success while down) the ping rate quadruples (capped at 2/s)
    until the state is confirmed, so verdicts land in seconds without raising
    the steady-state ping rate.
 
 ### Profiles
 
-| Profile | Red after | Recover after | Reactivity α | Yellow/red loss |
-|---------|-----------|---------------|--------------|-----------------|
-| Sensitive | 2 fails (~2–3 s) | 2 OKs | 0.45 | 15% / 50% |
-| Balanced (default) | 3 fails (~4 s) | 3 OKs | 0.30 | 35% / 60% |
-| Steady | 5 fails (~7 s) | 4 OKs | 0.18 | 40% / 70% |
+| Profile | Red after | Recover after | Reactivity α | Yellow/red loss | Yellow jitter |
+|---------|-----------|---------------|--------------|-----------------|---------------|
+| Sensitive | 2 fails (~2–3 s) | 2 OKs | 0.45 | 15% / 50% | 60 ms |
+| Balanced (default) | 3 fails (~4 s) | 3 OKs | 0.30 | 35% / 60% | 100 ms |
+| Steady | 5 fails (~7 s) | 4 OKs | 0.18 | 40% / 70% | 150 ms |
 
 A single lost ping spikes the loss EWMA to α×100%, so Sensitive blinks yellow
 on one drop (by design) while Balanced and Steady need two or more. Editing

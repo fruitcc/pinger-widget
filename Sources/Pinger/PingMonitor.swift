@@ -47,6 +47,11 @@ final class PingMonitor: ObservableObject {
     private(set) var smoothedLatencyMs: Double?
     /// Smoothed loss fraction (0...1) over recent pings.
     private(set) var smoothedLossFraction: Double = 0
+    /// RTP-style jitter: EWMA of each sample's deviation from the smoothed
+    /// latency. A single 900 ms spike on a 30 ms baseline registers instantly
+    /// (alpha × 870 ms) and decays over the next few good pings; sustained
+    /// oscillation keeps it high. Nil until two successes.
+    private(set) var smoothedJitterMs: Double?
 
     private var consecutiveFailures = 0
     private var consecutiveSuccesses = 0
@@ -72,6 +77,7 @@ final class PingMonitor: ObservableObject {
         events.removeAll()
         smoothedLatencyMs = nil
         smoothedLossFraction = 0
+        smoothedJitterMs = nil
         consecutiveFailures = 0
         consecutiveSuccesses = 0
         hasSamples = false
@@ -127,7 +133,14 @@ final class PingMonitor: ObservableObject {
         if case .success(let ms) = event.outcome {
             consecutiveSuccesses += 1
             consecutiveFailures = 0
-            smoothedLatencyMs = smoothedLatencyMs.map { alpha * ms + (1 - alpha) * $0 } ?? ms
+            if let baseline = smoothedLatencyMs {
+                // Deviation from the pre-update baseline is the jitter sample.
+                let deviation = abs(ms - baseline)
+                smoothedJitterMs = smoothedJitterMs.map { alpha * deviation + (1 - alpha) * $0 } ?? deviation
+                smoothedLatencyMs = alpha * ms + (1 - alpha) * baseline
+            } else {
+                smoothedLatencyMs = ms
+            }
             lossSample = 0
         } else {
             consecutiveFailures += 1
@@ -142,6 +155,7 @@ final class PingMonitor: ObservableObject {
             // Recovered: drop the outage-era averages so the dot doesn't stay
             // red/yellow while a ~100% loss EWMA slowly decays.
             smoothedLossFraction = 0
+            smoothedJitterMs = nil
             if case .success(let ms) = event.outcome { smoothedLatencyMs = ms }
         }
         status = newStatus
@@ -167,6 +181,9 @@ final class PingMonitor: ObservableObject {
         if smoothedLatencyMs == nil { return .down }
         if smoothedLossPercent > d.yellowLossPercent { return .degraded }
         if let lat = smoothedLatencyMs, lat > settings.yellowLatencyMs { return .degraded }
+        // Latency spikes/instability degrade quality even when the average
+        // looks fine; jitter alone never causes red.
+        if let jitter = smoothedJitterMs, jitter > d.yellowJitterMs { return .degraded }
         return .good
     }
 }

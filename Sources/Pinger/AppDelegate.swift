@@ -90,7 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettingsWindow() {
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsWindowView(monitor: monitor))
+            let hosting = NSHostingController(rootView: SettingsWindowView(monitor: monitor) { [weak self] in
+                self?.settingsWindow?.performClose(nil)
+            })
             let window = NSWindow(contentViewController: hosting)
             window.title = "Pinger Settings"
             window.styleMask = [.titled, .closable]
@@ -196,7 +198,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTooltip() {
         var parts = ["Pinger — \(monitor.status.title)"]
         if let lat = monitor.smoothedLatencyMs {
-            parts.append(String(format: "~%.0f ms", lat))
+            var latency = String(format: "~%.0f", lat)
+            if let jitter = monitor.smoothedJitterMs {
+                latency += String(format: " ±%.0f", jitter)
+            }
+            parts.append(latency + " ms")
         }
         parts.append(String(format: "~%.0f%% loss", monitor.smoothedLossPercent))
         statusItem.button?.toolTip = parts.joined(separator: ", ")

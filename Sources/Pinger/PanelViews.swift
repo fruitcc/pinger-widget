@@ -37,7 +37,11 @@ struct StatusPanelView: View {
     private var statsLine: String {
         var parts: [String] = ["\(monitor.settings.host) every \(formatNumber(monitor.settings.intervalSeconds))s"]
         if let lat = monitor.smoothedLatencyMs {
-            parts.append(String(format: "~%.0f ms", lat))
+            var latency = String(format: "~%.0f", lat)
+            if let jitter = monitor.smoothedJitterMs {
+                latency += String(format: " ±%.0f", jitter)
+            }
+            parts.append(latency + " ms")
         }
         if !monitor.events.isEmpty {
             parts.append(String(format: "~%.0f%% loss", monitor.smoothedLossPercent))
@@ -55,7 +59,7 @@ struct StatusPanelView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(monitor.events) { event in
-                    EventRow(event: event)
+                    EventRow(event: event, slowThresholdMs: monitor.settings.yellowLatencyMs)
                 }
             }
         }
@@ -64,6 +68,8 @@ struct StatusPanelView: View {
 
 private struct EventRow: View {
     let event: PingEvent
+    /// Successful pings slower than this get a yellow dot (latency spike).
+    let slowThresholdMs: Double
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -89,7 +95,7 @@ private struct EventRow: View {
 
     private var dotColor: Color {
         switch event.outcome {
-        case .success: .green
+        case .success(let ms): ms > slowThresholdMs ? .yellow : .green
         case .timeout: .red
         case .error: .orange
         }
@@ -108,6 +114,8 @@ private struct EventRow: View {
 
 struct SettingsWindowView: View {
     @ObservedObject var monitor: PingMonitor
+    /// Called after Apply commits, to close the hosting window.
+    var onClose: () -> Void = {}
 
     @State private var newHost = ""
     // Draft fields, committed by Apply.
@@ -117,6 +125,7 @@ struct SettingsWindowView: View {
     @State private var redLatency = ""
     @State private var yellowLoss = ""
     @State private var redLoss = ""
+    @State private var yellowJitter = ""
     @State private var failuresToDown = ""
     @State private var successesToRecover = ""
     @State private var alpha = ""
@@ -132,8 +141,11 @@ struct SettingsWindowView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Apply") { apply() }
-                    .keyboardShortcut(.defaultAction)
+                Button("Apply & Close") {
+                    apply()
+                    onClose()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
@@ -223,9 +235,10 @@ struct SettingsWindowView: View {
 
     private func draftDetectionParams() -> DetectionParams? {
         guard let a = Double(alpha), let f = Int(failuresToDown), let s = Int(successesToRecover),
-              let yl = Double(yellowLoss), let rl = Double(redLoss) else { return nil }
+              let yl = Double(yellowLoss), let rl = Double(redLoss),
+              let yj = Double(yellowJitter) else { return nil }
         return DetectionParams(ewmaAlpha: a, failuresToDown: f, successesToRecover: s,
-                               yellowLossPercent: yl, redLossPercent: rl)
+                               yellowLossPercent: yl, redLossPercent: rl, yellowJitterMs: yj)
     }
 
     private func applyPreset(_ profile: DetectionProfile) {
@@ -235,6 +248,7 @@ struct SettingsWindowView: View {
         successesToRecover = String(preset.successesToRecover)
         yellowLoss = formatNumber(preset.yellowLossPercent)
         redLoss = formatNumber(preset.redLossPercent)
+        yellowJitter = formatNumber(preset.yellowJitterMs)
     }
 
     private var detectionSection: some View {
@@ -243,8 +257,9 @@ struct SettingsWindowView: View {
             row("Timeout (ms)", $timeout, hint: "1000")
             row("Yellow > latency (ms)", $yellowLatency, hint: "150")
             row("Red > latency (ms)", $redLatency, hint: "500")
-            row("Yellow > loss (%)", $yellowLoss, hint: "25")
+            row("Yellow > loss (%)", $yellowLoss, hint: "35")
             row("Red > loss (%)", $redLoss, hint: "60")
+            row("Yellow > jitter (ms)", $yellowJitter, hint: "100")
             row("Red after consecutive fails", $failuresToDown, hint: "3")
             row("Recover after consecutive OKs", $successesToRecover, hint: "3")
             row("Reactivity (0.05–0.9)", $alpha, hint: "0.3")
@@ -272,6 +287,7 @@ struct SettingsWindowView: View {
         redLatency = formatNumber(s.redLatencyMs)
         yellowLoss = formatNumber(s.detection.yellowLossPercent)
         redLoss = formatNumber(s.detection.redLossPercent)
+        yellowJitter = formatNumber(s.detection.yellowJitterMs)
         failuresToDown = String(s.detection.failuresToDown)
         successesToRecover = String(s.detection.successesToRecover)
         alpha = formatNumber(s.detection.ewmaAlpha)
@@ -285,6 +301,7 @@ struct SettingsWindowView: View {
             if let v = Double(redLatency) { s.redLatencyMs = v }
             if let v = Double(yellowLoss) { s.detection.yellowLossPercent = v }
             if let v = Double(redLoss) { s.detection.redLossPercent = v }
+            if let v = Double(yellowJitter) { s.detection.yellowJitterMs = v }
             if let v = Int(failuresToDown) { s.detection.failuresToDown = v }
             if let v = Int(successesToRecover) { s.detection.successesToRecover = v }
             if let v = Double(alpha) { s.detection.ewmaAlpha = v }

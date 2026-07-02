@@ -35,6 +35,10 @@ struct DetectionParams: Equatable {
     var yellowLossPercent: Double
     /// Smoothed loss (%) above which status degrades to red.
     var redLossPercent: Double
+    /// Smoothed jitter (ms) above which status degrades to yellow.
+    /// Jitter is the EWMA of each sample's deviation from the smoothed
+    /// latency, so isolated huge spikes register immediately and decay.
+    var yellowJitterMs: Double
 }
 
 /// User-configurable settings, persisted in UserDefaults.
@@ -55,9 +59,9 @@ struct Settings: Equatable {
         // A single failure spikes the loss EWMA to alpha*100%, so yellowLoss
         // relative to alpha decides whether one dropped ping blinks yellow:
         // sensitive blinks by design; balanced and steady need 2+ failures.
-        .sensitive: DetectionParams(ewmaAlpha: 0.45, failuresToDown: 2, successesToRecover: 2, yellowLossPercent: 15, redLossPercent: 50),
-        .balanced: DetectionParams(ewmaAlpha: 0.30, failuresToDown: 3, successesToRecover: 3, yellowLossPercent: 35, redLossPercent: 60),
-        .steady: DetectionParams(ewmaAlpha: 0.18, failuresToDown: 5, successesToRecover: 4, yellowLossPercent: 40, redLossPercent: 70),
+        .sensitive: DetectionParams(ewmaAlpha: 0.45, failuresToDown: 2, successesToRecover: 2, yellowLossPercent: 15, redLossPercent: 50, yellowJitterMs: 60),
+        .balanced: DetectionParams(ewmaAlpha: 0.30, failuresToDown: 3, successesToRecover: 3, yellowLossPercent: 35, redLossPercent: 60, yellowJitterMs: 100),
+        .steady: DetectionParams(ewmaAlpha: 0.18, failuresToDown: 5, successesToRecover: 4, yellowLossPercent: 40, redLossPercent: 70, yellowJitterMs: 150),
     ]
 
     /// The profile is derived from the values, not stored: if the detection
@@ -91,6 +95,7 @@ struct Settings: Equatable {
         static let successesToRecover = "successesToRecover"
         static let yellowLoss = "yellowLossPercent"
         static let redLoss = "redLossPercent"
+        static let yellowJitter = "yellowJitterMs"
     }
 
     static func load() -> Settings {
@@ -107,6 +112,7 @@ struct Settings: Equatable {
         if d.object(forKey: Key.successesToRecover) != nil { s.detection.successesToRecover = d.integer(forKey: Key.successesToRecover) }
         if d.object(forKey: Key.yellowLoss) != nil { s.detection.yellowLossPercent = d.double(forKey: Key.yellowLoss) }
         if d.object(forKey: Key.redLoss) != nil { s.detection.redLossPercent = d.double(forKey: Key.redLoss) }
+        if d.object(forKey: Key.yellowJitter) != nil { s.detection.yellowJitterMs = d.double(forKey: Key.yellowJitter) }
         return s.sanitized()
     }
 
@@ -123,6 +129,7 @@ struct Settings: Equatable {
         d.set(detection.successesToRecover, forKey: Key.successesToRecover)
         d.set(detection.yellowLossPercent, forKey: Key.yellowLoss)
         d.set(detection.redLossPercent, forKey: Key.redLoss)
+        d.set(detection.yellowJitterMs, forKey: Key.yellowJitter)
     }
 
     /// Clamps every field into a safe range. Non-finite values (NaN/inf survive
@@ -147,6 +154,7 @@ struct Settings: Equatable {
         s.detection.successesToRecover = min(max(s.detection.successesToRecover, 1), 20)
         s.detection.yellowLossPercent = Self.clamp(s.detection.yellowLossPercent, 0...100, fallback: Settings.default.detection.yellowLossPercent)
         s.detection.redLossPercent = Self.clamp(s.detection.redLossPercent, s.detection.yellowLossPercent...100, fallback: max(Settings.default.detection.redLossPercent, s.detection.yellowLossPercent))
+        s.detection.yellowJitterMs = Self.clamp(s.detection.yellowJitterMs, 1...60_000, fallback: Settings.default.detection.yellowJitterMs)
         return s
     }
 
