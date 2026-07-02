@@ -38,7 +38,8 @@ Designed to react fast without flip-flopping:
    regardless of the averages.
 4. **Sticky recovery** — leaving red requires M consecutive successes, so one
    lucky ping during an outage can't flash green; on recovery the averages
-   reset so green shows immediately.
+   reset and the tick is re-scored, so a healthy comeback shows green
+   immediately while a slow or lossy comeback shows yellow/red honestly.
 5. **Adaptive burst probing** — at the first sign of a transition (a failure
    while up, a success while down) the ping rate quadruples (capped at 2/s)
    until the state is confirmed, so verdicts land in seconds without raising

@@ -36,12 +36,8 @@ struct StatusPanelView: View {
 
     private var statsLine: String {
         var parts: [String] = ["\(monitor.settings.host) every \(formatNumber(monitor.settings.intervalSeconds))s"]
-        if let lat = monitor.smoothedLatencyMs {
-            var latency = String(format: "~%.0f", lat)
-            if let jitter = monitor.smoothedJitterMs {
-                latency += String(format: " ±%.0f", jitter)
-            }
-            parts.append(latency + " ms")
+        if let latency = monitor.latencySummary {
+            parts.append(latency)
         }
         if !monitor.events.isEmpty {
             parts.append(String(format: "~%.0f%% loss", monitor.smoothedLossPercent))
@@ -141,11 +137,9 @@ struct SettingsWindowView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Apply & Close") {
-                    apply()
-                    onClose()
-                }
-                .keyboardShortcut(.defaultAction)
+                // No .defaultAction shortcut: Return must stay usable inside
+                // the text fields (notably Add host) without closing the window.
+                Button("Apply & Close", action: applyAndClose)
             }
         }
         .padding(16)
@@ -227,7 +221,7 @@ struct SettingsWindowView: View {
     /// Derived from the draft fields: matches a preset exactly, or Custom.
     private var draftProfile: DetectionProfile {
         guard let params = draftDetectionParams() else { return .custom }
-        for (profile, preset) in Settings.presets where preset == params {
+        for (profile, preset) in Settings.presets where preset.approximatelyEquals(params) {
             return profile
         }
         return .custom
@@ -252,17 +246,19 @@ struct SettingsWindowView: View {
     }
 
     private var detectionSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            row("Ping interval (s)", $interval, hint: "2")
-            row("Timeout (ms)", $timeout, hint: "1000")
-            row("Yellow > latency (ms)", $yellowLatency, hint: "150")
-            row("Red > latency (ms)", $redLatency, hint: "500")
-            row("Yellow > loss (%)", $yellowLoss, hint: "35")
-            row("Red > loss (%)", $redLoss, hint: "60")
-            row("Yellow > jitter (ms)", $yellowJitter, hint: "100")
-            row("Red after consecutive fails", $failuresToDown, hint: "3")
-            row("Recover after consecutive OKs", $successesToRecover, hint: "3")
-            row("Reactivity (0.05–0.9)", $alpha, hint: "0.3")
+        // Hints show the defaults; derive them so they can't drift.
+        let def = Settings.default
+        return VStack(alignment: .leading, spacing: 6) {
+            row("Ping interval (s)", $interval, hint: formatNumber(def.intervalSeconds))
+            row("Timeout (ms)", $timeout, hint: String(def.timeoutMs))
+            row("Yellow > latency (ms)", $yellowLatency, hint: formatNumber(def.yellowLatencyMs))
+            row("Red > latency (ms)", $redLatency, hint: formatNumber(def.redLatencyMs))
+            row("Yellow > loss (%)", $yellowLoss, hint: formatNumber(def.detection.yellowLossPercent))
+            row("Red > loss (%)", $redLoss, hint: formatNumber(def.detection.redLossPercent))
+            row("Yellow > jitter (ms)", $yellowJitter, hint: formatNumber(def.detection.yellowJitterMs))
+            row("Red after consecutive fails", $failuresToDown, hint: String(def.detection.failuresToDown))
+            row("Recover after consecutive OKs", $successesToRecover, hint: String(def.detection.successesToRecover))
+            row("Reactivity (0.05–0.9)", $alpha, hint: formatNumber(def.detection.ewmaAlpha))
         }
     }
 
@@ -293,7 +289,8 @@ struct SettingsWindowView: View {
         alpha = formatNumber(s.detection.ewmaAlpha)
     }
 
-    private func apply() {
+    private func applyAndClose() {
+        let typed = draftSnapshot()
         commit { s in
             if let v = Double(interval) { s.intervalSeconds = v }
             if let v = Int(timeout) { s.timeoutMs = v }
@@ -307,6 +304,16 @@ struct SettingsWindowView: View {
             if let v = Double(alpha) { s.detection.ewmaAlpha = v }
         }
         loadDraft() // reflect sanitized values back into the fields
+        // Close only if everything was accepted as typed; if something was
+        // rejected or clamped, stay open so the corrected values are visible.
+        if draftSnapshot() == typed {
+            onClose()
+        }
+    }
+
+    private func draftSnapshot() -> [String] {
+        [interval, timeout, yellowLatency, redLatency,
+         yellowLoss, redLoss, yellowJitter, failuresToDown, successesToRecover, alpha]
     }
 }
 
@@ -314,5 +321,7 @@ struct SettingsWindowView: View {
 /// Values are already clamped by Settings.sanitized(), but stay trap-safe anyway.
 func formatNumber(_ value: Double) -> String {
     guard value.isFinite, abs(value) < 1e15 else { return "0" }
-    return value == value.rounded() ? String(Int(value)) : String(value)
+    if value == value.rounded() { return String(Int(value)) }
+    // %g trims representation noise (0.449999988… → "0.45").
+    return String(format: "%g", value)
 }

@@ -135,8 +135,10 @@ final class PingMonitor: ObservableObject {
             consecutiveFailures = 0
             if let baseline = smoothedLatencyMs {
                 // Deviation from the pre-update baseline is the jitter sample.
+                // Seed at alpha weight too (prior jitter treated as 0), so one
+                // early spike can't set the whole EWMA to its full deviation.
                 let deviation = abs(ms - baseline)
-                smoothedJitterMs = smoothedJitterMs.map { alpha * deviation + (1 - alpha) * $0 } ?? deviation
+                smoothedJitterMs = alpha * deviation + (1 - alpha) * (smoothedJitterMs ?? 0)
                 smoothedLatencyMs = alpha * ms + (1 - alpha) * baseline
             } else {
                 smoothedLatencyMs = ms
@@ -150,18 +152,30 @@ final class PingMonitor: ObservableObject {
         smoothedLossFraction = hasSamples ? alpha * lossSample + (1 - alpha) * smoothedLossFraction : lossSample
         hasSamples = true
 
-        let newStatus = evaluate()
-        if status == .down && newStatus != .down {
-            // Recovered: drop the outage-era averages so the dot doesn't stay
-            // red/yellow while a ~100% loss EWMA slowly decays.
+        if status == .down && consecutiveSuccesses >= settings.detection.successesToRecover {
+            // Recovery achieved: drop the outage-era averages *before* scoring,
+            // so evaluate() judges the link's current quality (a comeback at
+            // 900 ms latency scores red/yellow, not a blind green) instead of
+            // waiting for a ~100% loss EWMA to decay.
             smoothedLossFraction = 0
             smoothedJitterMs = nil
             if case .success(let ms) = event.outcome { smoothedLatencyMs = ms }
         }
-        status = newStatus
+        status = evaluate()
     }
 
     var smoothedLossPercent: Double { smoothedLossFraction * 100 }
+
+    /// Display string for the smoothed latency and jitter, e.g. "~19 ±7 ms",
+    /// shared by the panel header and the menu bar tooltip.
+    var latencySummary: String? {
+        guard let lat = smoothedLatencyMs else { return nil }
+        var summary = String(format: "~%.0f", lat)
+        if let jitter = smoothedJitterMs {
+            summary += String(format: " ±%.0f", jitter)
+        }
+        return summary + " ms"
+    }
 
     private func evaluate() -> ConnectionStatus {
         guard hasSamples else { return .unknown }
@@ -171,8 +185,11 @@ final class PingMonitor: ObservableObject {
         if consecutiveFailures >= d.failuresToDown { return .down }
 
         // Sticky recovery: only consecutive successes can lift a red status.
-        if status == .down {
-            return consecutiveSuccesses >= d.successesToRecover ? .good : .down
+        // Once recovery is achieved the tick falls through to normal scoring
+        // (record() has already reset the outage-era averages), so a link that
+        // came back slow or lossy shows yellow/red rather than a false green.
+        if status == .down && consecutiveSuccesses < d.successesToRecover {
+            return .down
         }
 
         if smoothedLossPercent > d.redLossPercent { return .down }

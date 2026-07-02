@@ -33,7 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .sink { [weak self] status in self?.updateIcon(for: status) }
             .store(in: &cancellables)
+        // updateTooltip reads the monitor's other properties, and @Published
+        // fires on willSet — hop to the next main-loop turn so the read
+        // happens after record() has finished updating all metrics.
         monitor.$events
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateTooltip() }
             .store(in: &cancellables)
 
@@ -197,12 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateTooltip() {
         var parts = ["Pinger — \(monitor.status.title)"]
-        if let lat = monitor.smoothedLatencyMs {
-            var latency = String(format: "~%.0f", lat)
-            if let jitter = monitor.smoothedJitterMs {
-                latency += String(format: " ±%.0f", jitter)
-            }
-            parts.append(latency + " ms")
+        if let latency = monitor.latencySummary {
+            parts.append(latency)
         }
         parts.append(String(format: "~%.0f%% loss", monitor.smoothedLossPercent))
         statusItem.button?.toolTip = parts.joined(separator: ", ")

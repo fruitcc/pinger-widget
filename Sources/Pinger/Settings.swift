@@ -39,6 +39,19 @@ struct DetectionParams: Equatable {
     /// Jitter is the EWMA of each sample's deviation from the smoothed
     /// latency, so isolated huge spikes register immediately and decay.
     var yellowJitterMs: Double
+
+    /// Tolerant comparison for profile matching: persisted doubles can drift
+    /// in representation (e.g. written as 32-bit floats by `defaults write`),
+    /// so exact == would silently turn a preset into "Custom".
+    func approximatelyEquals(_ other: DetectionParams) -> Bool {
+        func close(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 0.001 }
+        return close(ewmaAlpha, other.ewmaAlpha)
+            && failuresToDown == other.failuresToDown
+            && successesToRecover == other.successesToRecover
+            && close(yellowLossPercent, other.yellowLossPercent)
+            && close(redLossPercent, other.redLossPercent)
+            && close(yellowJitterMs, other.yellowJitterMs)
+    }
 }
 
 /// User-configurable settings, persisted in UserDefaults.
@@ -67,7 +80,7 @@ struct Settings: Equatable {
     /// The profile is derived from the values, not stored: if the detection
     /// params match a preset exactly, that's the profile; otherwise Custom.
     var detectionProfile: DetectionProfile {
-        for (profile, params) in Self.presets where params == detection {
+        for (profile, params) in Self.presets where params.approximatelyEquals(detection) {
             return profile
         }
         return .custom
@@ -112,7 +125,21 @@ struct Settings: Equatable {
         if d.object(forKey: Key.successesToRecover) != nil { s.detection.successesToRecover = d.integer(forKey: Key.successesToRecover) }
         if d.object(forKey: Key.yellowLoss) != nil { s.detection.yellowLossPercent = d.double(forKey: Key.yellowLoss) }
         if d.object(forKey: Key.redLoss) != nil { s.detection.redLossPercent = d.double(forKey: Key.redLoss) }
-        if d.object(forKey: Key.yellowJitter) != nil { s.detection.yellowJitterMs = d.double(forKey: Key.yellowJitter) }
+        if d.object(forKey: Key.yellowJitter) != nil {
+            s.detection.yellowJitterMs = d.double(forKey: Key.yellowJitter)
+        } else {
+            // Migration from pre-jitter installs: if the saved params match a
+            // preset (ignoring jitter), adopt that preset's jitter threshold so
+            // the user's profile doesn't silently become Custom.
+            for preset in presets.values {
+                var candidate = preset
+                candidate.yellowJitterMs = s.detection.yellowJitterMs
+                if candidate.approximatelyEquals(s.detection) {
+                    s.detection.yellowJitterMs = preset.yellowJitterMs
+                    break
+                }
+            }
+        }
         return s.sanitized()
     }
 
