@@ -9,8 +9,8 @@ A tiny macOS menu bar app that shows your internet health as a colored dot.
 
 It pings a destination (default `8.8.8.8`) every N seconds (default 2s) using
 native ICMP echo over an unprivileged datagram socket — sandbox-friendly, no
-subprocesses, no special privileges. IPv4 destinations (or hostnames that
-resolve to IPv4).
+subprocesses, no special privileges. Both IPv4 and IPv6 destinations work;
+hostnames follow the system's address-family preference.
 
 **Left-click** the dot: results panel — current status, smoothed latency ±
 jitter and loss, and the last 10 ping events (latency in ms, `timed out`, or

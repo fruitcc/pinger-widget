@@ -16,7 +16,8 @@ struct PingEvent: Identifiable, Equatable {
 /// Sends a single ICMP echo request over an unprivileged SOCK_DGRAM ICMP
 /// socket (Apple's SimplePing approach). Works inside the App Sandbox with
 /// the network-client entitlement — no subprocesses, no raw-socket privilege.
-/// IPv4 only for now.
+/// Supports IPv4 (ICMP) and IPv6 (ICMPv6); address family follows the
+/// system's resolution preference for hostnames.
 enum Pinger {
     static func ping(host: String, timeoutMs: Int, completion: @escaping (PingOutcome) -> Void) {
         DispatchQueue.global(qos: .utility).async {
@@ -25,9 +26,8 @@ enum Pinger {
     }
 
     private static func runPing(host: String, timeoutMs: Int) -> PingOutcome {
-        // Resolve to an IPv4 address.
         var hints = addrinfo()
-        hints.ai_family = AF_INET
+        hints.ai_family = AF_UNSPEC
         hints.ai_socktype = SOCK_DGRAM
         var resolved: UnsafeMutablePointer<addrinfo>?
         let gaiResult = getaddrinfo(host, nil, &hints, &resolved)
@@ -39,7 +39,8 @@ enum Pinger {
         }
         defer { freeaddrinfo(resolved) }
 
-        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
+        let isIPv6 = addr.pointee.ai_family == AF_INET6
+        let fd = socket(addr.pointee.ai_family, SOCK_DGRAM, isIPv6 ? IPPROTO_ICMPV6 : IPPROTO_ICMP)
         guard fd >= 0 else {
             return .error("socket: \(String(cString: strerror(errno)))")
         }
@@ -51,13 +52,17 @@ enum Pinger {
         let sequence = UInt16.random(in: 0...UInt16.max)
         let token = (0..<8).map { _ in UInt8.random(in: 0...UInt8.max) }
         var packet = [UInt8](repeating: 0, count: 24)
-        packet[0] = 8 // ICMP echo request
+        packet[0] = isIPv6 ? 128 : 8 // echo request (ICMPv6 / ICMP)
         packet[6] = UInt8(sequence >> 8)
         packet[7] = UInt8(sequence & 0xFF)
         for (i, byte) in token.enumerated() { packet[8 + i] = byte }
-        let checksum = icmpChecksum(packet)
-        packet[2] = UInt8(checksum >> 8)
-        packet[3] = UInt8(checksum & 0xFF)
+        if !isIPv6 {
+            // ICMPv6 checksums are computed by the kernel (they cover an IPv6
+            // pseudo-header we can't build here); IPv4 ICMP is ours to fill.
+            let checksum = icmpChecksum(packet)
+            packet[2] = UInt8(checksum >> 8)
+            packet[3] = UInt8(checksum & 0xFF)
+        }
 
         // connect() the socket so replies count as return traffic on an
         // outgoing connection — required for the App Sandbox to deliver them
@@ -90,13 +95,13 @@ enum Pinger {
             let received = recv(fd, &buffer, buffer.count, 0)
             guard received > 0 else { continue }
 
-            // Datagram ICMP replies arrive with the IPv4 header attached.
-            guard received >= 20 else { continue }
-            let headerLength = Int(buffer[0] & 0x0F) * 4
+            // IPv4 datagram ICMP replies arrive with the IP header attached;
+            // ICMPv6 replies start directly at the ICMPv6 header.
+            let headerLength = isIPv6 ? 0 : Int(buffer[0] & 0x0F) * 4
             guard received >= headerLength + 16 else { continue }
             let icmp = Array(buffer[headerLength..<received])
 
-            guard icmp[0] == 0 else { continue } // echo reply
+            guard icmp[0] == (isIPv6 ? 129 : 0) else { continue } // echo reply
             let replySequence = UInt16(icmp[6]) << 8 | UInt16(icmp[7])
             guard replySequence == sequence, Array(icmp[8..<16]) == token else { continue }
 
