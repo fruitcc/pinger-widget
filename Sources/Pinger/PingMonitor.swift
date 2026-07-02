@@ -8,6 +8,21 @@ enum ConnectionStatus {
     case down     // red
 }
 
+/// Health detection strategy, built for fast reaction without flip-flopping:
+///
+/// 1. **Recency-weighted scoring (EWMA)** — loss and latency are exponentially
+///    weighted moving averages, so the last few pings dominate and old samples
+///    fade instead of lingering for a full fixed window.
+/// 2. **Failure fast path** — N consecutive failures force red immediately,
+///    without waiting for the average to drift there.
+/// 3. **Sticky recovery** — leaving red requires M consecutive successes, so a
+///    single lucky ping during an outage can't flash green. On recovery the
+///    EWMAs are reset, so green appears right away instead of waiting for a
+///    high loss average to decay.
+/// 4. **Adaptive burst probing** — at the first sign of a transition (a failure
+///    while up, or a success while down) the ping rate quadruples until the
+///    state is confirmed, so verdicts arrive in seconds without raising the
+///    steady-state ping rate.
 @MainActor
 final class PingMonitor: ObservableObject {
     static let historySize = 10
@@ -18,20 +33,26 @@ final class PingMonitor: ObservableObject {
         didSet {
             guard settings != oldValue else { return }
             settings.save()
-            // Only host/interval/timeout changes invalidate old samples;
-            // threshold edits just need the current window re-scored.
-            let needsRestart = settings.host != oldValue.host
-                || settings.intervalSeconds != oldValue.intervalSeconds
-                || settings.timeoutMs != oldValue.timeoutMs
-            if needsRestart {
+            if settings.host != oldValue.host {
+                // Only a destination change invalidates old samples.
                 restart()
             } else {
                 status = evaluate()
+                scheduleNext(after: nextDelay())
             }
         }
     }
 
-    private var timer: Timer?
+    /// Smoothed latency over recent successful pings (nil until one succeeds).
+    private(set) var smoothedLatencyMs: Double?
+    /// Smoothed loss fraction (0...1) over recent pings.
+    private(set) var smoothedLossFraction: Double = 0
+
+    private var consecutiveFailures = 0
+    private var consecutiveSuccesses = 0
+    private var hasSamples = false
+
+    private var nextTimer: Timer?
     private var pingInFlight = false
     /// Bumped on every restart; in-flight pings from an older generation are discarded.
     private var generation = 0
@@ -47,16 +68,15 @@ final class PingMonitor: ObservableObject {
     private func restart() {
         generation += 1
         pingInFlight = false
-        timer?.invalidate()
+        nextTimer?.invalidate()
         events.removeAll()
+        smoothedLatencyMs = nil
+        smoothedLossFraction = 0
+        consecutiveFailures = 0
+        consecutiveSuccesses = 0
+        hasSamples = false
         status = .unknown
         tick()
-        let timer = Timer(timeInterval: settings.intervalSeconds, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
-        // .common so the timer keeps firing while menus/panels are open.
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
     private func tick() {
@@ -71,8 +91,29 @@ final class PingMonitor: ObservableObject {
                 guard generation == self.generation else { return }
                 self.pingInFlight = false
                 self.record(PingEvent(date: Date(), outcome: outcome))
+                self.scheduleNext(after: self.nextDelay())
             }
         }
+    }
+
+    private func scheduleNext(after delay: TimeInterval) {
+        nextTimer?.invalidate()
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        // .common so the timer keeps firing while menus/panels are open.
+        RunLoop.main.add(timer, forMode: .common)
+        nextTimer = timer
+    }
+
+    /// Quadruple the probe rate while a transition is suspected but unconfirmed.
+    private func nextDelay() -> TimeInterval {
+        let suspectingOutage = status != .down && consecutiveFailures > 0
+        let suspectingRecovery = status == .down && consecutiveSuccesses > 0
+        if suspectingOutage || suspectingRecovery {
+            return max(0.5, settings.intervalSeconds / 4)
+        }
+        return settings.intervalSeconds
     }
 
     private func record(_ event: PingEvent) {
@@ -80,36 +121,52 @@ final class PingMonitor: ObservableObject {
         if events.count > Self.historySize {
             events.removeLast(events.count - Self.historySize)
         }
-        status = evaluate()
-    }
 
-    // MARK: - Health evaluation
-
-    var lossPercent: Double {
-        guard !events.isEmpty else { return 0 }
-        let failures = events.filter {
-            if case .success = $0.outcome { return false }
-            return true
-        }.count
-        return Double(failures) / Double(events.count) * 100
-    }
-
-    var averageLatencyMs: Double? {
-        let latencies = events.compactMap { event -> Double? in
-            if case .success(let ms) = event.outcome { return ms }
-            return nil
+        let alpha = settings.detection.ewmaAlpha
+        let lossSample: Double
+        if case .success(let ms) = event.outcome {
+            consecutiveSuccesses += 1
+            consecutiveFailures = 0
+            smoothedLatencyMs = smoothedLatencyMs.map { alpha * ms + (1 - alpha) * $0 } ?? ms
+            lossSample = 0
+        } else {
+            consecutiveFailures += 1
+            consecutiveSuccesses = 0
+            lossSample = 1
         }
-        guard !latencies.isEmpty else { return nil }
-        return latencies.reduce(0, +) / Double(latencies.count)
+        smoothedLossFraction = hasSamples ? alpha * lossSample + (1 - alpha) * smoothedLossFraction : lossSample
+        hasSamples = true
+
+        let newStatus = evaluate()
+        if status == .down && newStatus != .down {
+            // Recovered: drop the outage-era averages so the dot doesn't stay
+            // red/yellow while a ~100% loss EWMA slowly decays.
+            smoothedLossFraction = 0
+            if case .success(let ms) = event.outcome { smoothedLatencyMs = ms }
+        }
+        status = newStatus
     }
+
+    var smoothedLossPercent: Double { smoothedLossFraction * 100 }
 
     private func evaluate() -> ConnectionStatus {
-        guard !events.isEmpty else { return .unknown }
-        // No successful pings in the window at all.
-        guard let avg = averageLatencyMs else { return .down }
-        let loss = lossPercent
-        if loss > settings.redLossPercent || avg > settings.redLatencyMs { return .down }
-        if loss > settings.yellowLossPercent || avg > settings.yellowLatencyMs { return .degraded }
+        guard hasSamples else { return .unknown }
+        let d = settings.detection
+
+        // Fast path: sustained failures mean down, no matter what the average says.
+        if consecutiveFailures >= d.failuresToDown { return .down }
+
+        // Sticky recovery: only consecutive successes can lift a red status.
+        if status == .down {
+            return consecutiveSuccesses >= d.successesToRecover ? .good : .down
+        }
+
+        if smoothedLossPercent > d.redLossPercent { return .down }
+        if let lat = smoothedLatencyMs, lat > settings.redLatencyMs { return .down }
+        // No success yet at all (e.g. first pings after launch are failing).
+        if smoothedLatencyMs == nil { return .down }
+        if smoothedLossPercent > d.yellowLossPercent { return .degraded }
+        if let lat = smoothedLatencyMs, lat > settings.yellowLatencyMs { return .degraded }
         return .good
     }
 }

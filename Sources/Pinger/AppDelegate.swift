@@ -2,8 +2,7 @@ import AppKit
 import SwiftUI
 import Combine
 
-/// Borderless panel that can take keyboard focus (for the settings text fields)
-/// without activating the app.
+/// Borderless panel that can take keyboard focus without activating the app.
 private final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
@@ -13,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let monitor = PingMonitor()
     private var statusItem: NSStatusItem!
     private var statusPanel: StatusPanel!   // left click: ping results
-    private var settingsPanel: StatusPanel! // right click: settings + quit
+    private var settingsWindow: NSWindow?   // opened from the right-click menu
     private var cancellables = Set<AnyCancellable>()
     private var clickMonitor: Any?
 
@@ -26,8 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.toolTip = "Pinger"
         }
 
-        statusPanel = makePanel(rootView: StatusPanelView(monitor: monitor))
-        settingsPanel = makePanel(rootView: SettingsPanelView(monitor: monitor))
+        statusPanel = makeStatusPanel()
 
         // @Published delivers synchronously on the main actor; the initial
         // value arrives on subscribe, so no manual first update is needed.
@@ -42,11 +40,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.start()
     }
 
-    // MARK: - Panels
+    // MARK: - Click routing
 
-    private func makePanel<Content: View>(rootView: Content) -> StatusPanel {
+    @objc private func statusItemClicked() {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            closeStatusPanel()
+            showMenu()
+        } else if statusPanel.isVisible {
+            closeStatusPanel()
+        } else {
+            openStatusPanel()
+        }
+    }
+
+    // MARK: - Right click: destination menu
+
+    private func showMenu() {
+        let menu = NSMenu()
+        let header = NSMenuItem(title: "Ping Destination", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        for host in monitor.settings.hosts {
+            let item = NSMenuItem(title: host, action: #selector(selectHost(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = host == monitor.settings.host ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettingsWindow), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Pinger", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+
+        // Assigning statusItem.menu makes the next click show the menu instead
+        // of firing the action; clear it afterwards so left-clicks keep working.
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func selectHost(_ sender: NSMenuItem) {
+        var s = monitor.settings
+        s.host = sender.title
+        monitor.settings = s.sanitized()
+    }
+
+    // MARK: - Settings window
+
+    @objc private func openSettingsWindow() {
+        if settingsWindow == nil {
+            let hosting = NSHostingController(rootView: SettingsWindowView(monitor: monitor))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Pinger Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            settingsWindow = window
+        }
+        settingsWindow?.center()
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Left click: results panel
+
+    private func makeStatusPanel() -> StatusPanel {
         let hosting = NSHostingController(
-            rootView: rootView.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            rootView: StatusPanelView(monitor: monitor)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         )
         hosting.sizingOptions = [.preferredContentSize]
 
@@ -65,8 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
 
-        // Content height changes (events fill in, fields resize): keep the
-        // panel's top edge pinned under the menu bar instead of growing upward.
+        // Content height changes (events fill in): keep the panel's top edge
+        // pinned under the menu bar instead of growing upward.
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification, object: panel, queue: .main
         ) { [weak self, weak panel] _ in
@@ -78,38 +139,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return panel
     }
 
-    @objc private func statusItemClicked() {
-        let isRightClick = NSApp.currentEvent?.type == .rightMouseUp
-        let target: StatusPanel = isRightClick ? settingsPanel : statusPanel
-        let other: StatusPanel = isRightClick ? statusPanel : settingsPanel
-
-        if target.isVisible {
-            closePanels()
-        } else {
-            other.orderOut(nil)
-            open(target)
-        }
-    }
-
-    private func open(_ panel: StatusPanel) {
-        panel.layoutIfNeeded()
-        pinBelowStatusItem(panel)
-        panel.makeKeyAndOrderFront(nil)
+    private func openStatusPanel() {
+        statusPanel.layoutIfNeeded()
+        pinBelowStatusItem(statusPanel)
+        statusPanel.makeKeyAndOrderFront(nil)
 
         // Dismiss when the user clicks anywhere outside (global monitors only
-        // see events of other apps, so clicks on our own panels don't fire).
+        // see events of other apps, so clicks on our own panel don't fire).
         if clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown]
             ) { [weak self] _ in
-                Task { @MainActor in self?.closePanels() }
+                Task { @MainActor in self?.closeStatusPanel() }
             }
         }
     }
 
-    private func closePanels() {
+    private func closeStatusPanel() {
         statusPanel.orderOut(nil)
-        settingsPanel.orderOut(nil)
         if let clickMonitor {
             NSEvent.removeMonitor(clickMonitor)
             self.clickMonitor = nil
@@ -148,10 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateTooltip() {
         var parts = ["Pinger — \(monitor.status.title)"]
-        if let avg = monitor.averageLatencyMs {
-            parts.append(String(format: "avg %.0f ms", avg))
+        if let lat = monitor.smoothedLatencyMs {
+            parts.append(String(format: "~%.0f ms", lat))
         }
-        parts.append(String(format: "%.0f%% loss", monitor.lossPercent))
+        parts.append(String(format: "~%.0f%% loss", monitor.smoothedLossPercent))
         statusItem.button?.toolTip = parts.joined(separator: ", ")
     }
 
