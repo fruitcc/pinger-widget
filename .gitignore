@@ -4,3 +4,5 @@ dist/
 .swiftpm/
 xcuserdata/
 *.xcarchive
+# local-only App Store notes (contains team/account details)
+APP_STORE.md
