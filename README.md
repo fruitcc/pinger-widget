@@ -14,15 +14,23 @@ hostnames follow the system's address-family preference.
 
 **Left-click** the dot: results panel — current status, smoothed latency ±
 jitter and loss, and the last 10 ping events (latency in ms, `timed out`, or
-the error; latency spikes get a yellow dot).
+the error; latency spikes get a yellow dot). While the dot is yellow or red,
+the panel also shows **Diagnostics**: on every transition into a troubled
+state, Pinger automatically pings your default gateway and a reference host
+to localize the problem — router down, ISP trouble, or specific to your
+destination. A **Recent outages** section lists the last red episodes with
+durations (toggleable).
 
 **Right-click** the dot: menu with your destination list (switch instantly),
 **Settings…**, and **Quit**.
 
-**Settings window**: manage the destination list, pick a detection profile
+**Settings window**: general options (launch at login, outage log, outage
+notifications), manage the destination list, pick a detection profile
 (Sensitive / Balanced / Steady / Custom), and tune every number — ping
 interval, timeout, yellow/red latency and loss thresholds, consecutive-failure
 and recovery counts, and reactivity. Settings persist in `UserDefaults`.
+With notifications enabled, Pinger posts a notification when the connection
+goes down and when it recovers (with the outage duration).
 
 ## How detection works
 

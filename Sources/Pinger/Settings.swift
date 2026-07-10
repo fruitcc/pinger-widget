@@ -62,6 +62,10 @@ struct Settings: Equatable {
     var host: String
     var intervalSeconds: Double
     var timeoutMs: Int
+    /// Show the recent-outages section in the results panel.
+    var logOutages: Bool
+    /// Post a notification when the connection goes down or recovers.
+    var notifyOutages: Bool
     /// Smoothed latency (ms) above which status degrades to yellow.
     var yellowLatencyMs: Double
     /// Smoothed latency (ms) above which status degrades to red.
@@ -91,6 +95,8 @@ struct Settings: Equatable {
         host: "8.8.8.8",
         intervalSeconds: 2,
         timeoutMs: 1000,
+        logOutages: true,
+        notifyOutages: false,
         yellowLatencyMs: 150,
         redLatencyMs: 500,
         detection: presets[.balanced]!
@@ -101,6 +107,8 @@ struct Settings: Equatable {
         static let host = "host"
         static let interval = "intervalSeconds"
         static let timeout = "timeoutMs"
+        static let logOutages = "logOutages"
+        static let notifyOutages = "notifyOutages"
         static let yellowLatency = "yellowLatencyMs"
         static let redLatency = "redLatencyMs"
         static let alpha = "ewmaAlpha"
@@ -118,6 +126,8 @@ struct Settings: Equatable {
         if let host = d.string(forKey: Key.host), !host.isEmpty { s.host = host }
         if d.object(forKey: Key.interval) != nil { s.intervalSeconds = d.double(forKey: Key.interval) }
         if d.object(forKey: Key.timeout) != nil { s.timeoutMs = d.integer(forKey: Key.timeout) }
+        if d.object(forKey: Key.logOutages) != nil { s.logOutages = d.bool(forKey: Key.logOutages) }
+        if d.object(forKey: Key.notifyOutages) != nil { s.notifyOutages = d.bool(forKey: Key.notifyOutages) }
         if d.object(forKey: Key.yellowLatency) != nil { s.yellowLatencyMs = d.double(forKey: Key.yellowLatency) }
         if d.object(forKey: Key.redLatency) != nil { s.redLatencyMs = d.double(forKey: Key.redLatency) }
         if d.object(forKey: Key.alpha) != nil { s.detection.ewmaAlpha = d.double(forKey: Key.alpha) }
@@ -149,6 +159,8 @@ struct Settings: Equatable {
         d.set(host, forKey: Key.host)
         d.set(intervalSeconds, forKey: Key.interval)
         d.set(timeoutMs, forKey: Key.timeout)
+        d.set(logOutages, forKey: Key.logOutages)
+        d.set(notifyOutages, forKey: Key.notifyOutages)
         d.set(yellowLatencyMs, forKey: Key.yellowLatency)
         d.set(redLatencyMs, forKey: Key.redLatency)
         d.set(detection.ewmaAlpha, forKey: Key.alpha)

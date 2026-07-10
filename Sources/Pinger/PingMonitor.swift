@@ -1,11 +1,24 @@
 import Foundation
 import Combine
+@preconcurrency import UserNotifications
 
 enum ConnectionStatus {
     case unknown  // not enough data yet
     case good     // green
     case degraded // yellow
     case down     // red
+}
+
+/// A red-status episode: when the connection went down and (once it
+/// recovers) when it came back.
+struct Outage: Codable, Equatable, Identifiable {
+    let start: Date
+    var end: Date?
+    var id: Date { start }
+
+    var duration: TimeInterval? {
+        end.map { $0.timeIntervalSince(start) }
+    }
 }
 
 /// Health detection strategy, built for fast reaction without flip-flopping:
@@ -29,6 +42,11 @@ final class PingMonitor: ObservableObject {
 
     @Published private(set) var events: [PingEvent] = []  // newest first
     @Published private(set) var status: ConnectionStatus = .unknown
+    /// Recent red-status episodes, newest first (persisted, capped).
+    @Published private(set) var outages: [Outage] = []
+    /// Result of the automatic gateway/reference check; set while the status
+    /// is degraded/down, cleared on recovery.
+    @Published private(set) var diagnosis: Diagnosis?
     @Published var settings: Settings {
         didSet {
             guard settings != oldValue else { return }
@@ -37,7 +55,9 @@ final class PingMonitor: ObservableObject {
                 // Only a destination change invalidates old samples.
                 restart()
             } else {
-                status = evaluate()
+                let newStatus = evaluate()
+                handleTransition(from: status, to: newStatus, at: Date())
+                status = newStatus
                 scheduleNext(after: nextDelay())
             }
         }
@@ -62,8 +82,15 @@ final class PingMonitor: ObservableObject {
     /// Bumped on every restart; in-flight pings from an older generation are discarded.
     private var generation = 0
 
+    private static let outageLogKey = "outageLog"
+    private static let outageLogCap = 10
+
     init() {
         settings = Settings.load()
+        if let data = UserDefaults.standard.data(forKey: Self.outageLogKey),
+           let saved = try? JSONDecoder().decode([Outage].self, from: data) {
+            outages = saved
+        }
     }
 
     func start() {
@@ -73,6 +100,10 @@ final class PingMonitor: ObservableObject {
     private func restart() {
         generation += 1
         pingInFlight = false
+        // A destination switch mid-outage ends that outage's record; the old
+        // samples no longer describe the new destination.
+        closeOpenOutage(at: Date())
+        diagnosis = nil
         nextTimer?.invalidate()
         events.removeAll()
         smoothedLatencyMs = nil
@@ -161,7 +192,101 @@ final class PingMonitor: ObservableObject {
             smoothedJitterMs = nil
             if case .success(let ms) = event.outcome { smoothedLatencyMs = ms }
         }
-        status = evaluate()
+        let newStatus = evaluate()
+        handleTransition(from: status, to: newStatus, at: event.date)
+        status = newStatus
+    }
+
+    // MARK: - Transitions: outage log, notifications, diagnostics
+
+    private func handleTransition(from old: ConnectionStatus, to new: ConnectionStatus, at date: Date) {
+        guard old != new else {
+            // Still troubled: refresh a stale diagnosis so the panel stays honest.
+            if new == .down || new == .degraded,
+               let diagnosis, date.timeIntervalSince(diagnosis.date) > 60 {
+                runDiagnosis()
+            }
+            return
+        }
+
+        // Outage bookkeeping covers red episodes between known states; a
+        // restart (.unknown) isn't evidence the connection changed.
+        if new == .down && old != .unknown {
+            outages.insert(Outage(start: date), at: 0)
+            if outages.count > Self.outageLogCap {
+                outages.removeLast(outages.count - Self.outageLogCap)
+            }
+            saveOutages()
+            if settings.notifyOutages {
+                postNotification(title: "Internet connection lost",
+                                 body: "\(settings.host) stopped responding.")
+            }
+        }
+        if old == .down && (new == .good || new == .degraded) {
+            let duration = closeOpenOutage(at: date)
+            if settings.notifyOutages {
+                let body = duration.map { "Connection was down for \(Self.formatDuration($0))." }
+                    ?? "Connection is back."
+                postNotification(title: "Connection restored", body: body)
+            }
+        }
+
+        if new == .down || new == .degraded {
+            runDiagnosis()
+        } else {
+            diagnosis = nil
+        }
+    }
+
+    @discardableResult
+    private func closeOpenOutage(at date: Date) -> TimeInterval? {
+        guard let first = outages.first, first.end == nil else { return nil }
+        outages[0].end = date
+        saveOutages()
+        return outages[0].duration
+    }
+
+    private func saveOutages() {
+        if let data = try? JSONEncoder().encode(outages) {
+            UserDefaults.standard.set(data, forKey: Self.outageLogKey)
+        }
+    }
+
+    private var diagnosisInFlight = false
+
+    private func runDiagnosis() {
+        guard !diagnosisInFlight else { return }
+        diagnosisInFlight = true
+        Diagnostics.run(monitoredHost: settings.host, timeoutMs: settings.timeoutMs) { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                self.diagnosisInFlight = false
+                // Only surface it if we're still in trouble by the time it lands.
+                if self.status == .down || self.status == .degraded {
+                    self.diagnosis = result
+                }
+            }
+        }
+    }
+
+    private func postNotification(title: String, body: String) {
+        // UNUserNotificationCenter requires a real bundle (`swift run` has none).
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
+
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \((s % 3600) / 60)m"
     }
 
     var smoothedLossPercent: Double { smoothedLossFraction * 100 }

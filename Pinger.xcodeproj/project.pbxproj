@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0696C9A3C7C3948A755C6974 /* Pinger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1453CB6E475AF1FA8E5C12 /* Pinger.swift */; };
 		0969BB0588B1B2FCFE8B3B59 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49C906C462FC3851EA1EE03 /* Settings.swift */; };
+		2FEE0A1D9DCCFE3D8AA36A53 /* Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4057D09B194715FB7054FF3 /* Diagnostics.swift */; };
 		5B21D720EF7E11D1109036A1 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 505422552A4A84C777772273 /* AppIcon.icns */; };
 		69759BB8F7BF6D519836DFCD /* PingMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3C097B870967E2B3549CD6 /* PingMonitor.swift */; };
 		9912AA5BDCFE505C840E152A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = F066D4CE06C64B1636A93F2C /* main.swift */; };
@@ -26,6 +27,7 @@
 		8C3C097B870967E2B3549CD6 /* PingMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PingMonitor.swift; sourceTree = "<group>"; };
 		B49C906C462FC3851EA1EE03 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
 		F066D4CE06C64B1636A93F2C /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		F4057D09B194715FB7054FF3 /* Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics.swift; sourceTree = "<group>"; };
 		FA1453CB6E475AF1FA8E5C12 /* Pinger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pinger.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -34,6 +36,7 @@
 			isa = PBXGroup;
 			children = (
 				2936775D6731B5968940D762 /* AppDelegate.swift */,
+				F4057D09B194715FB7054FF3 /* Diagnostics.swift */,
 				F066D4CE06C64B1636A93F2C /* main.swift */,
 				0FFA8D520D77AB93A2F34FAA /* PanelViews.swift */,
 				FA1453CB6E475AF1FA8E5C12 /* Pinger.swift */,
@@ -149,6 +152,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CA5C2F9CBC032703A47C1683 /* AppDelegate.swift in Sources */,
+				2FEE0A1D9DCCFE3D8AA36A53 /* Diagnostics.swift in Sources */,
 				F8E3FE178DD562E74EC2D527 /* PanelViews.swift in Sources */,
 				69759BB8F7BF6D519836DFCD /* PingMonitor.swift in Sources */,
 				0696C9A3C7C3948A755C6974 /* Pinger.swift in Sources */,
@@ -168,14 +172,14 @@
 				CODE_SIGN_ENTITLEMENTS = Pinger.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9F5534T98N;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fruitcc.pinger;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.10;
@@ -308,14 +312,14 @@
 				CODE_SIGN_ENTITLEMENTS = Pinger.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9F5534T98N;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fruitcc.pinger;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.10;

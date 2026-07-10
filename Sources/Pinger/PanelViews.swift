@@ -1,4 +1,6 @@
 import SwiftUI
+import ServiceManagement
+import UserNotifications
 
 // MARK: - Left click: ping results
 
@@ -8,14 +10,52 @@ struct StatusPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            if monitor.status == .down || monitor.status == .degraded {
+                Divider()
+                diagnosticsSection
+            }
             Divider()
             eventList
+            if monitor.settings.logOutages && !monitor.outages.isEmpty {
+                Divider()
+                outagesSection
+            }
             Text("Right-click the dot to switch destination or open settings")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
         .padding(12)
         .frame(width: 320)
+    }
+
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Diagnostics")
+                .font(.system(size: 12, weight: .semibold))
+            if let d = monitor.diagnosis {
+                Text(d.verdict)
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let gatewayIP = d.gatewayIP {
+                    ProbeRow(label: "Router (\(gatewayIP))", outcome: d.gatewayOutcome)
+                }
+                ProbeRow(label: "Internet (\(d.referenceHost))", outcome: d.referenceOutcome)
+            } else {
+                Text("Running diagnostics…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var outagesSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Recent outages")
+                .font(.system(size: 12, weight: .semibold))
+            ForEach(monitor.outages.prefix(5)) { outage in
+                OutageRow(outage: outage)
+            }
+        }
     }
 
     private var header: some View {
@@ -59,6 +99,72 @@ struct StatusPanelView: View {
                 }
             }
         }
+    }
+}
+
+private struct ProbeRow: View {
+    let label: String
+    let outcome: PingOutcome?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(result)
+                .font(.system(size: 11, design: .monospaced))
+        }
+    }
+
+    private var dotColor: Color {
+        switch outcome {
+        case .success: .green
+        case .timeout, .error: .red
+        case nil: .gray
+        }
+    }
+
+    private var result: String {
+        switch outcome {
+        case .success(let ms): String(format: "%.1f ms", ms)
+        case .timeout: "timed out"
+        case .error(let message): message
+        case nil: "—"
+        }
+    }
+}
+
+private struct OutageRow: View {
+    let outage: Outage
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    private var label: String {
+        let start = Self.timeFormatter.string(from: outage.start)
+        if let duration = outage.duration {
+            return "\(start) · down \(PingMonitor.formatDuration(duration))"
+        }
+        return "\(start) · ongoing"
     }
 }
 
@@ -114,6 +220,7 @@ struct SettingsWindowView: View {
     var onClose: () -> Void = {}
 
     @State private var newHost = ""
+    @State private var launchAtLogin = false
     // Draft fields, committed by Apply.
     @State private var interval = ""
     @State private var timeout = ""
@@ -128,6 +235,8 @@ struct SettingsWindowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            generalSection
+            Divider()
             destinationsSection
             Divider()
             profileSection
@@ -145,6 +254,61 @@ struct SettingsWindowView: View {
         .padding(16)
         .frame(width: 400)
         .onAppear(perform: loadDraft)
+    }
+
+    // MARK: General (applied immediately)
+
+    private var generalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("General")
+                .font(.system(size: 12, weight: .semibold))
+            Toggle("Launch at login", isOn: launchAtLoginBinding)
+            Toggle("Log outages in the panel", isOn: settingBinding(\.logOutages))
+            Toggle("Notify when the connection drops or recovers", isOn: notifyBinding)
+        }
+        .font(.system(size: 12))
+        .toggleStyle(.checkbox)
+        .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLogin },
+            set: { enabled in
+                do {
+                    if enabled {
+                        try SMAppService.mainApp.register()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                    }
+                } catch {
+                    NSLog("launch-at-login change failed: \(error)")
+                }
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+            }
+        )
+    }
+
+    private func settingBinding(_ keyPath: WritableKeyPath<Settings, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { monitor.settings[keyPath: keyPath] },
+            set: { value in commit { $0[keyPath: keyPath] = value } }
+        )
+    }
+
+    private var notifyBinding: Binding<Bool> {
+        Binding(
+            get: { monitor.settings.notifyOutages },
+            set: { enabled in
+                commit { $0.notifyOutages = enabled }
+                if enabled, Bundle.main.bundleIdentifier != nil {
+                    // Surface the system permission prompt right away rather
+                    // than at the first outage.
+                    UNUserNotificationCenter.current()
+                        .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+                }
+            }
+        )
     }
 
     // MARK: Destinations (applied immediately)
