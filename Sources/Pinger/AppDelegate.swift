@@ -11,6 +11,14 @@ private final class StatusPanel: NSPanel {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let monitor = PingMonitor()
     private var statusItem: NSStatusItem!
+    // SwiftUI content exists only while its window is visible. A hidden
+    // NSHostingView still re-renders on every ping, and on macOS 26 each of
+    // those renders permanently leaks observation-tracking state — after days
+    // of uptime the accumulated state made every render take seconds and
+    // pegged the main thread at 100% CPU. So the hosting view is attached on
+    // open and torn down on close. The panel shell is reused (an orderOut'd
+    // window stays retained by AppKit anyway); the settings window is closed
+    // for real, which lets the whole window deallocate.
     private var statusPanel: StatusPanel!   // left click: ping results
     private var settingsWindow: NSWindow?   // opened from the right-click menu
     private var cancellables = Set<AnyCancellable>()
@@ -102,13 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettingsWindow() {
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsWindowView(monitor: monitor) { [weak self] in
-                self?.settingsWindow?.performClose(nil)
-            })
-            let window = NSWindow(contentViewController: hosting)
+            let window = NSWindow(contentViewController: makeSettingsHosting())
             window.title = "Pinger Settings"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
+            window.delegate = self  // windowWillClose releases window + content
             settingsWindow = window
         }
         settingsWindow?.center()
@@ -116,22 +122,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    private func makeSettingsHosting() -> NSViewController {
+        NSHostingController(rootView: SettingsWindowView(monitor: monitor) { [weak self] in
+            self?.settingsWindow?.performClose(nil)
+        })
+    }
+
     // MARK: - Left click: results panel
 
     private func makeStatusPanel() -> StatusPanel {
-        let hosting = NSHostingController(
-            rootView: StatusPanelView(monitor: monitor)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        )
-        hosting.sizingOptions = [.preferredContentSize]
-
         let panel = StatusPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
         )
-        panel.contentViewController = hosting
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -154,6 +159,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openStatusPanel() {
+        let hosting = NSHostingController(
+            rootView: StatusPanelView(monitor: monitor)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        )
+        hosting.sizingOptions = [.preferredContentSize]
+        statusPanel.contentViewController = hosting
+
+        // preferredContentSize can be delivered a runloop turn later; size the
+        // panel synchronously so it isn't shown undersized and repositioned.
+        statusPanel.setContentSize(hosting.view.fittingSize)
         statusPanel.layoutIfNeeded()
         pinBelowStatusItem(statusPanel)
         statusPanel.makeKeyAndOrderFront(nil)
@@ -171,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func closeStatusPanel() {
         statusPanel.orderOut(nil)
+        statusPanel.contentViewController = nil  // release the SwiftUI hosting view
         if let clickMonitor {
             NSEvent.removeMonitor(clickMonitor)
             self.clickMonitor = nil
@@ -236,5 +252,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         image.isTemplate = false
         return image
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    /// Only the settings window has a close button; the borderless status
+    /// panel never gets here. Closing discards unapplied edits (standard
+    /// dialog semantics): the reference is dropped immediately, so a reopen
+    /// always builds a fresh window, and the closed window's SwiftUI content
+    /// is detached explicitly — not left to window dealloc, which anything
+    /// holding the window would defeat — so it can't keep re-rendering
+    /// hidden. The detach is deferred one turn because performClose can be
+    /// initiated by the view's own "Apply & Close" button, and the hosting
+    /// view must not be released while that action is still on the stack.
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window == settingsWindow else { return }
+        settingsWindow = nil
+        DispatchQueue.main.async {
+            window.contentViewController = nil
+        }
     }
 }
