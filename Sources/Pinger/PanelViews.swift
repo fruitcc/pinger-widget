@@ -250,11 +250,22 @@ struct SettingsWindowView: View {
                 // the text fields (notably Add host) without closing the window.
                 Button("Apply & Close", action: applyAndClose)
             }
+            Text("Pinger \(Self.appVersion)")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
         }
         .padding(16)
         .frame(width: 400)
         .onAppear(perform: loadDraft)
     }
+
+    /// "1.2.1 (4)"; falls back when running outside an app bundle (swift run).
+    private static let appVersion: String = {
+        let info = Bundle.main.infoDictionary
+        guard let version = info?["CFBundleShortVersionString"] as? String else { return "dev" }
+        guard let build = info?["CFBundleVersion"] as? String else { return version }
+        return "\(version) (\(build))"
+    }()
 
     // MARK: General (applied immediately)
 
